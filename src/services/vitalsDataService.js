@@ -13,7 +13,9 @@ let vitalsData = null;
 const loadVitals = () => {
   if (vitalsData) return vitalsData;
 
-  const csvPath = path.resolve(__dirname, '../../../human_vital_signs_dataset_2024.csv');
+  const csvPath = process.env.VITALS_CSV_PATH
+    ? path.resolve(process.env.VITALS_CSV_PATH)
+    : path.resolve(__dirname, '../../data/vitals_sample.csv');
   
   if (!fs.existsSync(csvPath)) {
     console.warn('[VitalsData] CSV file not found at:', csvPath);

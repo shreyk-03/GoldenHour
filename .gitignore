@@ -26,3 +26,6 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 *.log
+
+# Local-only full dataset (trimmed sample is committed in data/)
+data/human_vital_signs_dataset_2024.csv

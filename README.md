@@ -22,7 +22,7 @@ EMT Reports Vitals
          │
          ▼
 ┌─────────────────────┐
-│   Dispatch Service   │  Writes to PostgreSQL, caches in Redis, broadcasts via WebSocket
+│   Dispatch Service   │  Writes to MongoDB, caches in MongoDB, broadcasts via WebSocket
 └─────────────────────┘
 ```
 
@@ -32,11 +32,11 @@ EMT Reports Vitals
 
 | Layer | Technology |
 |---|---|
-| Runtime | Node.js 18+ |
+| Runtime | Node.js 20+ |
 | Framework | Express.js |
-| Database | PostgreSQL 14+ |
-| Cache | Redis 7+ |
-| Real-time | WebSocket (ws) |
+| Database | MongoDB (Atlas in production) |
+| Cache | MongoDB TTL collection |
+| Real-time | WebSocket (ws) locally, polling on Vercel |
 | Routing API | OpenRouteService (free) / Haversine fallback |
 | Validation | Joi |
 
@@ -47,9 +47,8 @@ EMT Reports Vitals
 ### 1. Prerequisites
 ```bash
 # Required
-node >= 18.0.0
-postgresql >= 14
-redis >= 7
+node >= 20.0.0
+mongodb >= 6 (local or MongoDB Atlas)
 ```
 
 ### 2. Clone & Install
@@ -62,15 +61,12 @@ npm install
 ### 3. Configure Environment
 ```bash
 cp .env.example .env
-# Edit .env with your PostgreSQL and Redis credentials
+# Edit .env with your MONGODB_URI
 ```
 
 ### 4. Setup Database
 ```bash
-# Run migrations (creates all tables)
-npm run migrate
-
-# Seed with 6 hospitals + 18 specialists
+# Seed with hospitals + specialists
 npm run seed
 ```
 
@@ -310,10 +306,8 @@ src/
 ├── server.js              # Entry point, HTTP + WebSocket init
 ├── app.js                 # Express app, middleware, routes
 ├── db/
-│   ├── postgres.js        # PG pool, query helpers, transaction wrapper
-│   ├── redis.js           # Redis client, hospital cache, MCE tracking
-│   ├── schema.sql         # Full database schema
-│   ├── migrate.js         # Migration runner
+│   ├── mongodb.js         # MongoDB client, indexes, getDB helper
+│   ├── redis.js           # MongoDB-backed cache (hospital + MCE state)
 │   └── seed.js            # Seed hospitals and specialists
 ├── services/
 │   ├── severityPredictor.js  # NEWS2 triage scoring engine

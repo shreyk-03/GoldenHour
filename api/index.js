@@ -1,20 +1,29 @@
 const app = require('../src/app');
 const { connectDB } = require('../src/db/mongodb');
 
-let isConnected = false;
+let dbReady = null;
+
+const ensureDB = () => {
+  if (!dbReady) {
+    dbReady = connectDB().catch((err) => {
+      console.error('[Vercel] MongoDB connection error:', err.message);
+      return false;
+    });
+  }
+  return dbReady;
+};
 
 module.exports = async (req, res) => {
-  if (!isConnected) {
-    try {
-      const success = await connectDB();
-      if (success) {
-        isConnected = true;
-      }
-    } catch (err) {
-      console.error('[Vercel] MongoDB Connection Error:', err);
-    }
+  if (req.url === '/health' || req.url.startsWith('/health?')) {
+    const connected = await ensureDB();
+    return res.status(200).json({
+      status: 'ok',
+      service: 'Emergency Triage & Routing System',
+      database: connected ? 'connected' : 'unavailable',
+      timestamp: new Date().toISOString(),
+    });
   }
-  
-  // Hand off the request to the Express app
+
+  await ensureDB();
   return app(req, res);
 };

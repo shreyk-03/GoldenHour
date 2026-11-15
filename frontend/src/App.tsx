@@ -371,8 +371,9 @@ export default function App() {
     
     fetchHospitals();
 
-    // Setup WebSocket with auto-reconnect
-    let ws: WebSocket;
+    // Setup WebSocket with auto-reconnect (dev). Vercel serverless has no persistent
+    // WebSocket endpoint here, so production falls back to polling.
+    let ws: WebSocket | undefined;
     let reconnectTimeout: any;
 
     const connectWS = () => {
@@ -421,11 +422,17 @@ export default function App() {
       ws.onerror = () => ws.close();
     };
 
-    connectWS();
+    let pollId: ReturnType<typeof setInterval> | undefined;
+    if (import.meta.env.DEV) {
+      connectWS();
+    } else {
+      pollId = setInterval(fetchHospitals, 5000);
+    }
 
     return () => {
       clearTimeout(reconnectTimeout);
       ws?.close();
+      if (pollId) clearInterval(pollId);
     };
   }, []);
 
