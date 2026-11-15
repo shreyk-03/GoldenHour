@@ -31,3 +31,5 @@ yarn-error.log*
 data/human_vital_signs_dataset_2024.csv
 
 .env.local
+
+.env*

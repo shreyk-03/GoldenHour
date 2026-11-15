@@ -1850,7 +1850,9 @@ export default function App() {
                 ))}
               </div>
             ) : (
-              <span className="text-slate-500 text-sm italic px-6">Connecting to dispatch network...</span>
+              <span className="text-slate-500 text-sm italic px-6">
+                {import.meta.env.DEV ? 'Connecting to dispatch network...' : 'Live network sync active · refreshing every 5s'}
+              </span>
             )}
           </div>
         </div>
