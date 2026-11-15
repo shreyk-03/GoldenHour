@@ -1,7 +1,7 @@
 require('dotenv').config();
 const http = require('http');
 const app = require('./app');
-const { connectDB: connectMongo } = require('./db/mongodb');
+const { connectDB: connectStore } = require('./db/store');
 const redis = require('./db/redis');
 const { initWebSocket } = require('./websocket/broadcaster');
 const { startSimulation, stopSimulation } = require('./services/simulationEngine');
@@ -12,13 +12,13 @@ const PORT = process.env.PORT || 3000;
 const startServer = async () => {
   console.log('\n========================================');
   console.log('  EMERGENCY TRIAGE & ROUTING SYSTEM');
-  console.log('  (MongoDB Edition)');
+  console.log('  (Upstash Redis Edition)');
   console.log('========================================\n');
 
-  // ---- Connect to MongoDB ----
-  const mongoOk = await connectMongo();
-  if (!mongoOk) {
-    console.error('[Server] MongoDB connection failed. Cannot start.');
+  // ---- Connect to the document store ----
+  const storeOk = await connectStore();
+  if (!storeOk) {
+    console.error('[Server] Redis connection failed. Cannot start.');
     process.exit(1);
   }
 

@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { asyncHandler } = require('../middleware/errorHandler');
 const { validate, hospitalCapacityUpdateSchema } = require('../middleware/validation');
-const { getDB } = require('../db/mongodb');
+const { getDB } = require('../db/store');
 const redis = require('../db/redis');
 const { getWebSocketBroadcaster } = require('../websocket/broadcaster');
 
@@ -123,22 +123,26 @@ router.patch('/:id/specialists/:specialistId', asyncHandler(async (req, res) => 
   const { is_on_duty, on_call } = req.body;
   const db = getDB();
 
-  const updateFields = {};
-  if (is_on_duty !== undefined) updateFields['specialists.$.is_on_duty'] = is_on_duty;
-  if (on_call !== undefined) updateFields['specialists.$.on_call'] = on_call;
-
-  const result = await db.collection('hospitals').findOneAndUpdate(
-    { id: id, 'specialists.id': specialistId },
-    { $set: updateFields },
-    { returnDocument: 'after' }
-  );
-
-  if (!result) {
+  const hospital = await db.collection('hospitals').findOne({ id, 'specialists.id': specialistId });
+  if (!hospital) {
     return res.status(404).json({ success: false, error: 'Hospital or Specialist not found' });
   }
 
-  // Find the updated specialist in the result doc
-  const specialist = result.specialists.find(s => s.id === specialistId);
+  const specialists = hospital.specialists.map((specialist) => {
+    if (specialist.id !== specialistId) return specialist;
+    return {
+      ...specialist,
+      ...(is_on_duty !== undefined && { is_on_duty }),
+      ...(on_call !== undefined && { on_call }),
+    };
+  });
+
+  await db.collection('hospitals').updateOne(
+    { id },
+    { $set: { specialists, updated_at: new Date() } }
+  );
+
+  const specialist = specialists.find((entry) => entry.id === specialistId);
 
   // Invalidate hospital cache
   await redis.invalidateHospitalCache(id);

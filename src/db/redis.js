@@ -1,14 +1,14 @@
-const { getDB } = require('./mongodb');
+const { getDB } = require('./store');
 
 // ============================================================
-// MONGODB-BASED CACHE SYSTEM (Redis Replacement)
+// DOCUMENT-STORE CACHE SYSTEM
 // ============================================================
 
 const HOSPITAL_CAPACITY_TTL = 60; // seconds
 const ALL_HOSPITALS_TTL = 30;
 
 const connect = async () => {
-  console.log('[Cache] Using MongoDB for caching');
+  console.log('[Cache] Using document store for caching');
   return true;
 };
 
@@ -106,7 +106,7 @@ const incrementMCEAssignment = async (mceId, hospitalId) => {
     { upsert: true, returnDocument: 'after' }
   );
   
-  return result.value;
+  return result;
 };
 
 const getMCEAssignmentCount = async (mceId, hospitalId) => {

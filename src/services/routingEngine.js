@@ -1,4 +1,4 @@
-const { getDB } = require('../db/mongodb');
+const { getDB } = require('../db/store');
 const { getAllHospitals, setAllHospitals, getMCEAllAssignments } = require('../db/redis');
 const { estimateTransitTime } = require('./routingService');
 
@@ -25,7 +25,7 @@ const fetchHospitalGrid = async () => {
   const cached = await getAllHospitals();
   if (cached) return cached;
 
-  // Cache miss — fetch from MongoDB
+  // Cache miss — fetch from the document store
   const db = getDB();
   const hospitals = await db.collection('hospitals')
     .find({ is_active: true })

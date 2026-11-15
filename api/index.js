@@ -1,7 +1,7 @@
 const app = require('../src/app');
-const { connectDB } = require('../src/db/mongodb');
+const { connectDB, isConfigured } = require('../src/db/store');
 
-const hasMongoConfig = Boolean(process.env.MONGODB_URI);
+const hasStoreConfig = isConfigured();
 
 const needsDatabase = (url) =>
   url.startsWith('/api/hospitals') ||
@@ -11,10 +11,10 @@ const needsDatabase = (url) =>
 let dbReady = null;
 
 const ensureDB = () => {
-  if (!hasMongoConfig) return Promise.resolve(false);
+  if (!hasStoreConfig) return Promise.resolve(false);
   if (!dbReady) {
     dbReady = connectDB().catch((err) => {
-      console.error('[Vercel] MongoDB connection error:', err.message);
+      console.error('[Vercel] Redis connection error:', err.message);
       return false;
     });
   }
@@ -32,10 +32,10 @@ module.exports = async (req, res) => {
     });
   }
 
-  if (!hasMongoConfig && needsDatabase(req.url)) {
+  if (!hasStoreConfig && needsDatabase(req.url)) {
     return res.status(503).json({
       success: false,
-      error: 'Database not configured. Set MONGODB_URI in the deployment environment.',
+      error: 'Database not configured. Connect Upstash Redis to this Vercel project.',
     });
   }
 

@@ -4,9 +4,8 @@ const { asyncHandler } = require('../middleware/errorHandler');
 const { validate, patientVitalsSchema, batchDispatchSchema, rerouteSchema } = require('../middleware/validation');
 const { dispatchPatient, reroutePatient, dispatchBatch } = require('../services/dispatchService');
 const { predictSeverityAndCareNeeds } = require('../services/severityPredictor');
-const { getDB } = require('../db/mongodb');
+const { getDB, ObjectId } = require('../db/store');
 const redis = require('../db/redis');
-const { ObjectId } = require('mongodb');
 
 /**
  * POST /api/dispatch
@@ -97,54 +96,38 @@ router.get('/:patientId', asyncHandler(async (req, res) => {
     return res.json({ success: true, source: 'live', data: activeDispatch });
   }
 
-  // Fall back to DB
-  const dispatch = await db.collection('dispatches').aggregate([
-    { $match: { patient_id: patientId } },
-    { $sort: { dispatched_at: -1 } },
-    { $limit: 1 },
-    {
-      $lookup: {
-        from: 'patients',
-        localField: 'patient_id',
-        foreignField: '_id',
-        as: 'patient'
-      }
-    },
-    {
-      $lookup: {
-        from: 'hospitals',
-        localField: 'assigned_hospital_id',
-        foreignField: 'id',
-        as: 'hospital'
-      }
-    },
-    {
-      $addFields: {
-        patient: { $arrayElemAt: ['$patient', 0] },
-        hospital: { $arrayElemAt: ['$hospital', 0] }
-      }
-    },
-    {
-      $addFields: {
-        incident_id: '$patient.incident_id',
-        severity_level: '$patient.severity_level',
-        news2_score: '$patient.news2_score',
-        predicted_care_needs: '$patient.predicted_care_needs',
-        status: '$patient.status',
-        hospital_name: '$hospital.name',
-        hospital_address: '$hospital.address',
-        hospital_latitude: { $arrayElemAt: ['$hospital.location.coordinates', 1] },
-        hospital_longitude: { $arrayElemAt: ['$hospital.location.coordinates', 0] }
-      }
-    },
-    { $project: { patient: 0, hospital: 0 } }
-  ]).toArray();
+  // Fall back to the document store
+  const latest = await db.collection('dispatches')
+    .find({ patient_id: patientId })
+    .sort({ dispatched_at: -1 })
+    .limit(1)
+    .toArray();
 
-  if (!dispatch.length) {
+  if (!latest.length) {
     return res.status(404).json({ success: false, error: 'Dispatch not found' });
   }
 
-  res.json({ success: true, source: 'database', data: dispatch[0] });
+  const dispatch = latest[0];
+  const patient = await db.collection('patients').findOne({ _id: dispatch.patient_id });
+  const hospital = await db.collection('hospitals').findOne({ id: dispatch.assigned_hospital_id });
+  const coordinates = hospital?.location?.coordinates || [];
+
+  res.json({
+    success: true,
+    source: 'database',
+    data: {
+      ...dispatch,
+      incident_id: patient?.incident_id,
+      severity_level: patient?.severity_level,
+      news2_score: patient?.news2_score,
+      predicted_care_needs: patient?.predicted_care_needs,
+      status: patient?.status,
+      hospital_name: hospital?.name,
+      hospital_address: hospital?.address,
+      hospital_latitude: coordinates[1],
+      hospital_longitude: coordinates[0],
+    },
+  });
 }));
 
 /**

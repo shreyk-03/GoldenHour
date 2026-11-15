@@ -1,4 +1,4 @@
-const { getDB } = require('../db/mongodb');
+const { getDB } = require('../db/store');
 const { invalidateHospitalCache } = require('../db/redis');
 const { getWebSocketBroadcaster } = require('../websocket/broadcaster');
 
@@ -59,7 +59,7 @@ const simulateHospitalChange = async (hospital, broadcast) => {
     return null;
   }
 
-  // Write to MongoDB
+  // Write to the document store
   await db.collection('hospitals').updateOne(
     { id: hospital.id },
     {

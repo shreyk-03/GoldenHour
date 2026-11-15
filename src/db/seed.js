@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { connectDB, getDB, client: mongoClient } = require('./mongodb');
+const { connectDB, getDB, client: mongoClient } = require('./store');
 const { v4: uuidv4 } = require('uuid');
 
 // ============================================================
@@ -312,11 +312,11 @@ const specialistData = [
 ];
 
 const seed = async () => {
-  console.log('[Seed] Starting MongoDB database seeding...');
+  console.log('[Seed] Starting Upstash Redis database seeding...');
   
   const connected = await connectDB();
   if (!connected) {
-    console.error('[Seed] Cannot connect to MongoDB. Exiting.');
+    console.error('[Seed] Cannot connect to Upstash Redis. Exiting.');
     process.exit(1);
   }
 
@@ -327,7 +327,7 @@ const seed = async () => {
     await db.collection('hospitals').deleteMany({});
     await db.collection('patients').deleteMany({});
     await db.collection('dispatches').deleteMany({});
-    console.log('[Seed] Cleared existing MongoDB collections');
+    console.log('[Seed] Cleared existing collections');
 
     // Prepare hospitals with embedded specialists and GeoJSON location
     const hospitalsToInsert = hospitalData.map(h => {
@@ -338,7 +338,7 @@ const seed = async () => {
         ...h,
         location: {
           type: 'Point',
-          coordinates: [h.longitude, h.latitude] // MongoDB uses [longitude, latitude]
+          coordinates: [h.longitude, h.latitude] // GeoJSON order: [longitude, latitude]
         },
         specialists,
         is_active: true,
@@ -349,9 +349,9 @@ const seed = async () => {
 
     // Insert hospitals
     const result = await db.collection('hospitals').insertMany(hospitalsToInsert);
-    console.log(`[Seed] Inserted ${result.insertedCount} hospitals into MongoDB`);
+    console.log(`[Seed] Inserted ${result.insertedCount} hospitals into the document store`);
 
-    console.log('\n[Seed] MongoDB seeded successfully!');
+    console.log('\n[Seed] Database seeded successfully!');
   } catch (err) {
     console.error('[Seed] Seeding failed:', err.message);
     process.exit(1);

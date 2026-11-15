@@ -34,8 +34,8 @@ EMT Reports Vitals
 |---|---|
 | Runtime | Node.js 20+ |
 | Framework | Express.js |
-| Database | MongoDB (Atlas in production) |
-| Cache | MongoDB TTL collection |
+| Database | Upstash Redis (provisioned through Vercel) |
+| Cache | Same document store (TTL collection) |
 | Real-time | WebSocket (ws) locally, polling on Vercel |
 | Routing API | OpenRouteService (free) / Haversine fallback |
 | Validation | Joi |
@@ -48,7 +48,7 @@ EMT Reports Vitals
 ```bash
 # Required
 node >= 20.0.0
-mongodb >= 6 (local or MongoDB Atlas)
+upstash redis (install through the Vercel marketplace)
 ```
 
 ### 2. Clone & Install
@@ -61,7 +61,7 @@ npm install
 ### 3. Configure Environment
 ```bash
 cp .env.example .env
-# Edit .env with your MONGODB_URI
+# Provision Upstash Redis via Vercel, then: vercel env pull .env.local
 ```
 
 ### 4. Setup Database
@@ -306,8 +306,8 @@ src/
 ├── server.js              # Entry point, HTTP + WebSocket init
 ├── app.js                 # Express app, middleware, routes
 ├── db/
-│   ├── mongodb.js         # MongoDB client, indexes, getDB helper
-│   ├── redis.js           # MongoDB-backed cache (hospital + MCE state)
+│   ├── store.js           # Upstash-backed document store + ObjectId
+│   ├── redis.js           # Cache helpers (hospital + MCE state)
 │   └── seed.js            # Seed hospitals and specialists
 ├── services/
 │   ├── severityPredictor.js  # NEWS2 triage scoring engine

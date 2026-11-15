@@ -1,5 +1,5 @@
 const { v4: uuidv4 } = require('uuid');
-const { getDB, client: mongoClient } = require('../db/mongodb');
+const { getDB, client: mongoClient } = require('../db/store');
 const redis = require('../db/redis');
 const { predictSeverityAndCareNeeds } = require('./severityPredictor');
 const { findOptimalHospital, batchRoute } = require('./routingEngine');
