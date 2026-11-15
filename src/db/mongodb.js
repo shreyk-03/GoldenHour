@@ -1,7 +1,7 @@
 const { MongoClient } = require('mongodb');
 
 const uri = process.env.MONGODB_URI || 'mongodb://localhost:27017/emergency_triage';
-const client = new MongoClient(uri);
+const client = new MongoClient(uri, { serverSelectionTimeoutMS: 5000 });
 
 let db;
 

@@ -29,3 +29,5 @@ yarn-error.log*
 
 # Local-only full dataset (trimmed sample is committed in data/)
 data/human_vital_signs_dataset_2024.csv
+
+.env.local
