@@ -6,7 +6,9 @@ import React, { useState, useEffect } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMapEvents, useMap } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
-import { Activity, Clock, MapPin, Navigation, ShieldAlert, CheckCircle2, Zap, MousePointerClick, HeartPulse, Car, UserCheck, Crosshair, Loader2, ExternalLink, Bot, Mic, MicOff, Send, X, AlertTriangle, Camera, Scan, Maximize2, Minimize2, Square, Ambulance, Hospital as HospitalIcon } from 'lucide-react';
+import { Activity, Clock, MapPin, Navigation, ShieldAlert, CheckCircle2, Zap, MousePointerClick, HeartPulse, Car, UserCheck, Crosshair, Loader2, ExternalLink, Bot, Mic, MicOff, Send, X, AlertTriangle, Camera, Scan, Maximize2, Minimize2, Square, Ambulance, Hospital as HospitalIcon, LogOut } from 'lucide-react';
+import { API_BASE, authFetch, getToken, clearToken, type AuthUser } from './auth';
+import LoginScreen from './Login';
 import { Card, CardContent, CardHeader, CardTitle } from './components/ui/card';
 import { Button } from './components/ui/button';
 import { Badge } from './components/ui/badge';
@@ -23,9 +25,6 @@ L.Icon.Default.mergeOptions({
 });
 
 // Same-origin when unset: Vite dev proxies /api and /ws; production build is served by Express with the API.
-const envApi = (import.meta.env.VITE_API_URL as string | undefined)?.trim();
-const API_BASE = envApi ? envApi.replace(/\/$/, '') : '';
-
 function getWebSocketUrl(): string {
   if (API_BASE) {
     return `${API_BASE.replace(/^http/, 'ws')}/ws`;
@@ -75,6 +74,8 @@ const fetchRoute = async (start: [number, number], end: [number, number]): Promi
 
 type Patient = {
   id: string;
+  serverId?: string;
+  missionStatus?: 'pending' | 'dispatching' | 'dispatched' | 'en_route' | 'arrived' | 'treated' | 'cancelled' | 'routing_failed';
   lat: number;
   lng: number;
   ambulanceLat: number;
@@ -122,6 +123,48 @@ const mapHospital = (h: any): Hospital => ({
   load: h.current_load_percent || 0,
 });
 
+// Helper to map a persisted mission (GET /api/patients) into dashboard state
+const mapMission = (m: any): Patient => {
+  const [lng, lat] = m.incident_location?.coordinates || [73.8567, 18.5204];
+  const severityMap: Record<string, Patient['severity']> = {
+    critical: 'Critical',
+    high: 'Urgent',
+    moderate: 'Stable',
+    low: 'Stable',
+  };
+  return {
+    id: m.incident_id || String(m._id),
+    serverId: String(m._id),
+    missionStatus: m.status,
+    lat,
+    lng,
+    ambulanceLat: Number(m.assigned_hospital_latitude ?? lat),
+    ambulanceLng: Number(m.assigned_hospital_longitude ?? lng),
+    dispatchedUnit: m.dispatched_unit || 'AMB-Auto',
+    routeToPatient: [],
+    routeToHospital: [],
+    currentRoutePhase: 'ARRIVED',
+    currentRouteIndex: 0,
+    vitals: {
+      hr: m.heart_rate,
+      bp: `${m.systolic_bp}/${m.diastolic_bp}`,
+      spo2: m.spo2,
+      gcs: m.gcs_score,
+    },
+    symptoms: Array.isArray(m.symptoms)
+      ? m.symptoms.join(', ')
+      : (m.symptoms || m.chief_complaint || 'Persisted mission'),
+    predictedNeeds: [
+      ...(m.predicted_care_needs?.equipment || []),
+      m.predicted_care_needs?.specialist,
+    ].filter(Boolean) as string[],
+    severity: severityMap[m.severity_level] || 'Stable',
+    assignedHospitalId: m.assigned_hospital_id || null,
+    routingRationale: m.routing_rationale_text || 'Dispatch record restored from the network store.',
+    eta: m.estimated_transit_minutes ?? null,
+  };
+};
+
 // Map Helper Components
 function MapEvents({ onLocationSelect }: { onLocationSelect: (lat: number, lng: number) => void }) {
   useMapEvents({
@@ -153,6 +196,57 @@ export default function App() {
   const [roadblockLocation, setRoadblockLocation] = useState<[number, number] | null>(null);
   const [liveUpdates, setLiveUpdates] = useState<{id: string; text: string; time: string; type: 'up' | 'down'}[]>([]);
   const [availableAmbulances, setAvailableAmbulances] = useState<{id: string; lat: number; lng: number}[]>([]);
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [authChecking, setAuthChecking] = useState(true);
+  const [statusUpdating, setStatusUpdating] = useState(false);
+
+  // Validate any stored session on load
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!getToken()) {
+      setAuthChecking(false);
+      return;
+    }
+
+    (async () => {
+      try {
+        const res = await authFetch(`${API_BASE}/api/auth/me`);
+        const data = await res.json();
+        if (!cancelled && res.ok && data.success) {
+          setAuthUser(data.data);
+        } else if (!cancelled) {
+          clearToken();
+        }
+      } catch {
+        if (!cancelled) clearToken();
+      } finally {
+        if (!cancelled) setAuthChecking(false);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, []);
+
+  // A rejected token anywhere in the app drops back to the login screen
+  useEffect(() => {
+    const handleUnauthorized = () => {
+      clearToken();
+      setAuthUser(null);
+      setPatients([]);
+      setSelectedPatientId(null);
+    };
+    window.addEventListener('goldenhour:unauthorized', handleUnauthorized);
+    return () => window.removeEventListener('goldenhour:unauthorized', handleUnauthorized);
+  }, []);
+
+  const handleLogout = () => {
+    clearToken();
+    setAuthUser(null);
+    setPatients([]);
+    setHospitals([]);
+    setSelectedPatientId(null);
+  };
 
   // Scene Vision AI State
   const [scenePhoto, setScenePhoto] = useState<string | null>(null);
@@ -211,7 +305,7 @@ export default function App() {
       // Fetch "Actual" Vitals from the 200k record dataset
       try {
         const risk = (emergencyType === 'cardiac' || emergencyType === 'head' || emergencyType === 'unconscious') ? 'High Risk' : 'Low Risk';
-        const res = await fetch(`${API_BASE}/api/patients/vitals/random?risk=${encodeURIComponent(risk)}`);
+        const res = await authFetch(`${API_BASE}/api/patients/vitals/random?risk=${encodeURIComponent(risk)}`);
         const data = await res.json();
         if (data.success && data.data) {
           const v = data.data;
@@ -357,9 +451,11 @@ export default function App() {
 
 
   useEffect(() => {
+    if (!authUser) return;
+
     const fetchHospitals = async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/hospitals`);
+        const res = await authFetch(`${API_BASE}/api/hospitals`);
         const data = await res.json();
         if (data.success) {
           setHospitals(data.data.map(mapHospital));
@@ -434,7 +530,55 @@ export default function App() {
       ws?.close();
       if (pollId) clearInterval(pollId);
     };
-  }, []);
+  }, [authUser]);
+
+  // Restore active missions from the store and keep them in sync
+  useEffect(() => {
+    if (!authUser) return;
+    let cancelled = false;
+
+    const fetchMissions = async () => {
+      try {
+        const res = await authFetch(`${API_BASE}/api/patients?limit=100`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled || !data.success) return;
+
+        const activeStatuses = ['pending', 'dispatching', 'dispatched', 'en_route', 'arrived'];
+        const missions = (data.data || [])
+          .filter((patient: any) => activeStatuses.includes(patient.status))
+          .map(mapMission);
+
+        setPatients(prev => {
+          const byId = new Map(prev.map(patient => [patient.id, patient]));
+          const serverIds = new Set(missions.map((mission: Patient) => mission.id));
+
+          for (const mission of missions) {
+            const existing = byId.get(mission.id);
+            byId.set(mission.id, existing
+              ? { ...existing, missionStatus: mission.missionStatus, eta: mission.eta ?? existing.eta }
+              : mission);
+          }
+
+          // Missions completed or cancelled elsewhere disappear from the board
+          for (const [id, patient] of byId) {
+            if (patient.serverId && !serverIds.has(id)) byId.delete(id);
+          }
+
+          return Array.from(byId.values());
+        });
+      } catch (e) {
+        console.error('Mission sync failed', e);
+      }
+    };
+
+    fetchMissions();
+    const interval = setInterval(fetchMissions, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [authUser]);
 
   // Animation Engine for Ambulances
   useEffect(() => {
@@ -540,7 +684,7 @@ export default function App() {
   const fillScenario = async (type: 'cardiac' | 'trauma' | 'stable') => {
     try {
       const risk = type === 'stable' ? 'Low Risk' : 'High Risk';
-      const res = await fetch(`${API_BASE}/api/patients/vitals/random?risk=${encodeURIComponent(risk)}`);
+      const res = await authFetch(`${API_BASE}/api/patients/vitals/random?risk=${encodeURIComponent(risk)}`);
       const data = await res.json();
       if (data.success && data.data) {
         const v = data.data;
@@ -625,6 +769,19 @@ export default function App() {
     if (e) e.preventDefault();
     
     const patientSource = overrideData || newPatient;
+
+    // Pick the responding unit before dispatch so it can be persisted with the mission
+    let nearestAmb = availableAmbulances.length > 0 ? availableAmbulances[0] : null;
+    let minDist = Infinity;
+    availableAmbulances.forEach(a => {
+      const d = Math.sqrt(Math.pow(a.lat - patientSource.lat, 2) + Math.pow(a.lng - patientSource.lng, 2));
+      if (d < minDist) {
+        minDist = d;
+        nearestAmb = a;
+      }
+    });
+    const ambLat = nearestAmb ? nearestAmb.lat : patientSource.lat + (Math.random() - 0.5) * 0.05;
+    const ambLng = nearestAmb ? nearestAmb.lng : patientSource.lng + (Math.random() - 0.5) * 0.05;
     
     let systolic_bp = 120, diastolic_bp = 80;
     if (patientSource.bp && patientSource.bp.includes('/')) {
@@ -648,10 +805,11 @@ export default function App() {
       symptoms: patientSource.symptoms ? (typeof patientSource.symptoms === 'string' ? patientSource.symptoms.split(',').map((s: string) => s.trim()) : patientSource.symptoms) : [],
       incident_latitude: patientSource.lat,
       incident_longitude: patientSource.lng,
+      dispatched_unit: nearestAmb?.id,
     };
 
     try {
-      const res = await fetch(`${API_BASE}/api/dispatch`, {
+      const res = await authFetch(`${API_BASE}/api/dispatch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -703,11 +861,13 @@ export default function App() {
 
         // Remove the dispatched ambulance from available pool
         if (nearestAmb) {
-          setAvailableAmbulances(prev => prev.filter(a => a.id !== nearestAmb.id));
+          setAvailableAmbulances(prev => prev.filter(a => a.id !== nearestAmb!.id));
         }
 
         const newPatientRecord: Patient = {
           id: data.data.incidentId || payload.incident_id,
+          serverId: data.data.patientId,
+          missionStatus: 'dispatched',
           lat: newPatient.lat,
           lng: newPatient.lng,
           ambulanceLat: ambLat,
@@ -741,7 +901,7 @@ export default function App() {
         setNewPatient(prev => ({ ...prev, symptoms: '', disease: '' }));
         
         // Refresh hospitals to get updated load/capacity
-        const hRes = await fetch(`${API_BASE}/api/hospitals`);
+        const hRes = await authFetch(`${API_BASE}/api/hospitals`);
         const hData = await hRes.json();
         if (hData.success) {
           setHospitals(hData.data.map(mapHospital));
@@ -847,6 +1007,14 @@ export default function App() {
     const lat = userLocation ? userLocation[0] : newPatient.lat;
     const lng = userLocation ? userLocation[1] : newPatient.lng;
 
+    // Find the responding unit up front so it persists with the mission
+    let nearestAmb = availableAmbulances.length > 0 ? availableAmbulances[0] : null;
+    let minDist = Infinity;
+    availableAmbulances.forEach(a => {
+      const d = Math.sqrt(Math.pow(a.lat - lat, 2) + Math.pow(a.lng - lng, 2));
+      if (d < minDist) { minDist = d; nearestAmb = a; }
+    });
+
     // Build critical payload
     const payload = {
       incident_id: `SOS-${Date.now().toString().slice(-6)}`,
@@ -862,10 +1030,11 @@ export default function App() {
       symptoms: ['SOS Emergency', 'Critical Distress', 'Automated Dispatch'],
       incident_latitude: lat,
       incident_longitude: lng,
+      dispatched_unit: nearestAmb?.id,
     };
 
     try {
-      const res = await fetch(`${API_BASE}/api/dispatch`, {
+      const res = await authFetch(`${API_BASE}/api/dispatch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -889,13 +1058,6 @@ export default function App() {
         }
 
         // Find nearest ambulance
-        let nearestAmb = availableAmbulances.length > 0 ? availableAmbulances[0] : null;
-        let minDist = Infinity;
-        availableAmbulances.forEach(a => {
-          const d = Math.sqrt(Math.pow(a.lat - lat, 2) + Math.pow(a.lng - lng, 2));
-          if (d < minDist) { minDist = d; nearestAmb = a; }
-        });
-
         const ambLat = nearestAmb ? nearestAmb.lat : lat + (Math.random() - 0.5) * 0.05;
         const ambLng = nearestAmb ? nearestAmb.lng : lng + (Math.random() - 0.5) * 0.05;
 
@@ -910,6 +1072,8 @@ export default function App() {
 
         const newPatientRecord: Patient = {
           id: data.data.incidentId || payload.incident_id,
+          serverId: data.data.patientId,
+          missionStatus: 'dispatched',
           lat, lng,
           ambulanceLat: ambLat,
           ambulanceLng: ambLng,
@@ -941,7 +1105,7 @@ export default function App() {
         setMapCenter([lat, lng]);
 
         // Refresh hospitals
-        const hRes = await fetch(`${API_BASE}/api/hospitals`);
+        const hRes = await authFetch(`${API_BASE}/api/hospitals`);
         const hData = await hRes.json();
         if (hData.success) setHospitals(hData.data.map(mapHospital));
       }
@@ -1060,7 +1224,7 @@ export default function App() {
     setIsAiThinking(true);
 
     try {
-      const res = await fetch(`${API_BASE}/api/chat`, {
+      const res = await authFetch(`${API_BASE}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1097,9 +1261,52 @@ export default function App() {
     }
   };
 
+  const updateMissionStatus = async (status: 'arrived' | 'treated') => {
+    if (!selectedPatient?.serverId || statusUpdating) return;
+    setStatusUpdating(true);
+    try {
+      const res = await authFetch(`${API_BASE}/api/dispatch/${selectedPatient.serverId}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Status update failed');
+
+      const patientId = selectedPatient.id;
+      setPatients(prev => prev.map(p => (p.id === patientId ? { ...p, missionStatus: status } : p)));
+      setLiveUpdates(prev => [
+        {
+          id: `${Date.now()}-${patientId}-${status}`,
+          text: `${patientId}: mission marked ${status.toUpperCase()} by ${authUser?.name || authUser?.email || 'operator'}`,
+          time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          type: 'down',
+        },
+        ...prev,
+      ].slice(0, 8));
+    } catch (err: any) {
+      alert(err?.message || 'Could not update mission status');
+    } finally {
+      setStatusUpdating(false);
+    }
+  };
+
   const displayedHospitals = visionAnalysis?.override
     ? hospitals.filter(h => h.hasNeuro && h.hasCathLab)
     : hospitals;
+
+  if (authChecking) {
+    return (
+      <div className="h-screen w-full flex flex-col items-center justify-center gap-4 bg-[#0B0F1A] text-slate-300">
+        <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
+        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Restoring secure session…</p>
+      </div>
+    );
+  }
+
+  if (!authUser) {
+    return <LoginScreen onLogin={setAuthUser} />;
+  }
 
   return (
     <div className="h-screen w-full flex flex-col bg-[#0B0F1A] text-gray-100 overflow-hidden font-sans">
@@ -1134,6 +1341,21 @@ export default function App() {
           <div className="text-sm bg-white/5 border border-white/10 px-4 py-2 rounded-xl flex items-center gap-2">
             <span className="text-gray-400 font-bold uppercase tracking-widest text-[10px]">Active Units:</span>
             <span className="font-bold text-blue-400 text-lg leading-none">{patients.length}</span>
+          </div>
+
+          <div className="flex items-center gap-3 bg-white/5 border border-white/10 px-3 py-1.5 rounded-xl">
+            <div className="text-right leading-tight">
+              <div className="text-xs font-bold text-white max-w-[140px] truncate">{authUser.name || authUser.email}</div>
+              <div className="text-[9px] font-bold uppercase tracking-widest text-blue-400">{authUser.role}</div>
+            </div>
+            <Button
+              variant="outline"
+              onClick={handleLogout}
+              title="Sign out"
+              className="h-8 w-8 p-0 bg-white/5 border-white/10 text-slate-300 hover:bg-red-500/10 hover:border-red-500/40 hover:text-red-400 rounded-lg"
+            >
+              <LogOut className="h-4 w-4" />
+            </Button>
           </div>
         </div>
       </header>
@@ -1378,7 +1600,22 @@ export default function App() {
                       className={`p-3 rounded-xl border-l-4 cursor-pointer transition-all duration-200 mb-3 shadow-lg ${selectedPatientId === p.id ? 'bg-blue-500/10 border-blue-500 shadow-blue-500/20' : 'bg-white/5 border-white/10 hover:bg-white/10'}`}
                     >
                       <div className="flex justify-between items-start mb-2">
-                        <div className="text-xs font-bold text-white">Mission {p.id}</div>
+                        <div className="text-xs font-bold text-white flex items-center gap-2">
+                          Mission {p.id}
+                          {p.missionStatus && (
+                            <span className={`text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${
+                              p.missionStatus === 'treated'
+                                ? 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10'
+                                : p.missionStatus === 'arrived'
+                                ? 'text-blue-400 border-blue-500/30 bg-blue-500/10'
+                                : p.missionStatus === 'cancelled' || p.missionStatus === 'routing_failed'
+                                ? 'text-red-400 border-red-500/30 bg-red-500/10'
+                                : 'text-amber-400 border-amber-500/30 bg-amber-500/10'
+                            }`}>
+                              {p.missionStatus.replace('_', ' ')}
+                            </span>
+                          )}
+                        </div>
                         <Badge variant={p.severity === 'Critical' ? 'destructive' : 'outline'} className="text-[10px] py-0 px-1.5 border-white/20">
                           {p.severity}
                         </Badge>
@@ -1731,6 +1968,15 @@ export default function App() {
                           {selectedPatient.eta} min
                         </div>
                       </div>
+
+                      {selectedPatient.missionStatus && (
+                        <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-widest text-slate-400 bg-slate-900/60 border border-white/10 rounded-lg px-3 py-2">
+                          <span>Mission Status</span>
+                          <span className={selectedPatient.missionStatus === 'treated' ? 'text-emerald-400' : selectedPatient.missionStatus === 'arrived' ? 'text-blue-400' : 'text-amber-400'}>
+                            {selectedPatient.missionStatus.replace('_', ' ')}
+                          </span>
+                        </div>
+                      )}
                       
                       <div className="bg-slate-800 p-4 rounded-lg text-sm text-slate-300 leading-relaxed shadow-inner relative overflow-hidden">
                         <div className="absolute top-0 left-0 w-1 h-full bg-blue-500"></div>
@@ -1759,6 +2005,29 @@ export default function App() {
                           </a>
                         );
                       })()}
+
+                      {selectedPatient.serverId && authUser.role !== 'hospital' && selectedPatient.missionStatus !== 'treated' && (
+                        <div className="grid grid-cols-2 gap-2">
+                          <Button
+                            variant="outline"
+                            disabled={statusUpdating || selectedPatient.missionStatus === 'arrived'}
+                            onClick={() => updateMissionStatus('arrived')}
+                            className="bg-blue-500/10 border-blue-500/30 text-blue-300 hover:bg-blue-500/20 disabled:opacity-40"
+                          >
+                            <CheckCircle2 className="h-4 w-4 mr-1.5" />
+                            {selectedPatient.missionStatus === 'arrived' ? 'Arrived' : 'Mark Arrived'}
+                          </Button>
+                          <Button
+                            variant="outline"
+                            disabled={statusUpdating}
+                            onClick={() => updateMissionStatus('treated')}
+                            className="bg-emerald-500/10 border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-40"
+                          >
+                            <Activity className="h-4 w-4 mr-1.5" />
+                            Mark Treated
+                          </Button>
+                        </div>
+                      )}
                     </CardContent>
                   </Card>
                 </motion.div>

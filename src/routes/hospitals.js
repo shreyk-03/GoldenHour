@@ -3,6 +3,7 @@ const router = express.Router();
 const { asyncHandler } = require('../middleware/errorHandler');
 const { validate, hospitalCapacityUpdateSchema } = require('../middleware/validation');
 const { getDB } = require('../db/store');
+const { requireAuth, requireRole, requireHospitalScope } = require('../middleware/auth');
 const redis = require('../db/redis');
 const { getWebSocketBroadcaster } = require('../websocket/broadcaster');
 
@@ -39,7 +40,7 @@ router.get('/:id', asyncHandler(async (req, res) => {
  * PATCH /api/hospitals/:id/capacity
  * Update hospital real-time capacity (called by hospital management systems)
  */
-router.patch('/:id/capacity', validate(hospitalCapacityUpdateSchema), asyncHandler(async (req, res) => {
+router.patch('/:id/capacity', requireAuth, requireRole('admin', 'hospital'), requireHospitalScope('id'), validate(hospitalCapacityUpdateSchema), asyncHandler(async (req, res) => {
   const { id } = req.params;
   const updates = req.body;
   const broadcast = getWebSocketBroadcaster();
@@ -96,7 +97,7 @@ router.patch('/:id/capacity', validate(hospitalCapacityUpdateSchema), asyncHandl
  * GET /api/hospitals/:id/capacity/history
  * Get capacity history for analytics
  */
-router.get('/:id/capacity/history', asyncHandler(async (req, res) => {
+router.get('/:id/capacity/history', requireAuth, asyncHandler(async (req, res) => {
   const { hours = 24 } = req.query;
   const db = getDB();
   
@@ -118,7 +119,7 @@ router.get('/:id/capacity/history', asyncHandler(async (req, res) => {
  * PATCH /api/hospitals/:id/specialists/:specialistId
  * Toggle specialist on-duty status
  */
-router.patch('/:id/specialists/:specialistId', asyncHandler(async (req, res) => {
+router.patch('/:id/specialists/:specialistId', requireAuth, requireRole('admin', 'hospital'), requireHospitalScope('id'), asyncHandler(async (req, res) => {
   const { id, specialistId } = req.params;
   const { is_on_duty, on_call } = req.body;
   const db = getDB();

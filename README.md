@@ -62,11 +62,12 @@ npm install
 ```bash
 cp .env.example .env
 # Provision Upstash Redis via Vercel, then: vercel env pull .env.local
+# Set JWT_SECRET (any long random string, e.g. `openssl rand -hex 48`)
 ```
 
 ### 4. Setup Database
 ```bash
-# Seed with hospitals + specialists
+# Seed hospitals, specialists and the three demo users
 npm run seed
 ```
 
@@ -81,6 +82,43 @@ npm start
 
 Server starts at: `http://localhost:3000`  
 WebSocket at: `ws://localhost:3000/ws`
+
+---
+
+## Authentication & Roles
+
+All mutating endpoints and patient reads require a JWT. Send it as `Authorization: Bearer <token>`.
+
+```bash
+curl -X POST http://localhost:3000/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"dispatcher@goldenhour.dev","password":"Dispatch#2026"}'
+```
+
+### Demo accounts (created by `npm run seed`)
+
+| Role | Email | Password |
+| --- | --- | --- |
+| Admin | `admin@goldenhour.dev` | `GoldenHour#2026` |
+| Dispatcher | `dispatcher@goldenhour.dev` | `Dispatch#2026` |
+| Hospital ops | `hospital@goldenhour.dev` | `Hospital#2026` |
+
+| Capability | Admin | Dispatcher | Hospital |
+| --- | --- | --- | --- |
+| Create / reroute / batch dispatches | ✅ | ✅ | ❌ |
+| Change mission status | ✅ | ✅ | ❌ |
+| Update capacity / specialists | ✅ | ❌ | own hospital only |
+| Read hospitals, patients, analytics | ✅ | ✅ | ✅ |
+
+### Auth endpoints
+
+#### `POST /api/auth/login`
+Body: `{ "email", "password" }` → `{ success, data: { token, user } }`. Rate limited to 10 attempts/minute.
+
+#### `GET /api/auth/me`
+Validates the bearer token and returns `{ id, email, name, role, hospital_id }`.
+
+Auth configuration lives in `JWT_SECRET` (required — the server fails fast if missing) and `JWT_EXPIRES_IN` (default `12h`). Passwords are stored as bcrypt hashes.
 
 ---
 
@@ -192,6 +230,8 @@ Update patient status as journey progresses.
 { "status": "arrived" }
 ```
 Valid statuses: `en_route` → `arrived` → `treated` | `cancelled`
+
+Missions are persisted with their `incident_id` and status, so the dashboard restores active work after a page reload (`GET /api/patients` hydration + 15s polling) and `arrived` / `treated` updates survive refreshes.
 
 ---
 

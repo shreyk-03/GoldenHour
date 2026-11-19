@@ -1,4 +1,5 @@
 require('dotenv').config();
+const bcrypt = require('bcryptjs');
 const { connectDB, getDB, client: mongoClient } = require('./store');
 const { v4: uuidv4 } = require('uuid');
 
@@ -311,6 +312,15 @@ const specialistData = [
   ]},
 ];
 
+// ============================================================
+// Demo accounts — role-based access for the dashboard
+// ============================================================
+const demoUsers = [
+  { email: 'admin@goldenhour.dev', name: 'Ops Admin', role: 'admin', password: 'GoldenHour#2026' },
+  { email: 'dispatcher@goldenhour.dev', name: 'Dispatch Officer', role: 'dispatcher', password: 'Dispatch#2026' },
+  { email: 'hospital@goldenhour.dev', name: 'Deenanath Ops', role: 'hospital', hospitalName: 'Deenanath Mangeshkar Hospital', password: 'Hospital#2026' },
+];
+
 const seed = async () => {
   console.log('[Seed] Starting Upstash Redis database seeding...');
   
@@ -327,6 +337,7 @@ const seed = async () => {
     await db.collection('hospitals').deleteMany({});
     await db.collection('patients').deleteMany({});
     await db.collection('dispatches').deleteMany({});
+    await db.collection('users').deleteMany({});
     console.log('[Seed] Cleared existing collections');
 
     // Prepare hospitals with embedded specialists and GeoJSON location
@@ -350,6 +361,22 @@ const seed = async () => {
     // Insert hospitals
     const result = await db.collection('hospitals').insertMany(hospitalsToInsert);
     console.log(`[Seed] Inserted ${result.insertedCount} hospitals into the document store`);
+
+    const usersToInsert = demoUsers.map((user) => ({
+      id: uuidv4(),
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      hospital_id: user.hospitalName
+        ? hospitalsToInsert.find((hospital) => hospital.name === user.hospitalName)?.id || null
+        : null,
+      password_hash: bcrypt.hashSync(user.password, 10),
+      is_active: true,
+      created_at: new Date(),
+    }));
+
+    await db.collection('users').insertMany(usersToInsert);
+    console.log(`[Seed] Inserted ${usersToInsert.length} demo users (${usersToInsert.map((user) => user.role).join(', ')})`);
 
     console.log('\n[Seed] Database seeded successfully!');
   } catch (err) {

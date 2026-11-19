@@ -10,7 +10,9 @@ const dispatchRoutes  = require('./routes/dispatch');
 const hospitalRoutes  = require('./routes/hospitals');
 const patientRoutes   = require('./routes/patients');
 const chatRoutes      = require('./routes/chat');
+const authRoutes      = require('./routes/auth');
 const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
+const { requireAuth, requireRole } = require('./middleware/auth');
 
 const app = express();
 
@@ -51,10 +53,11 @@ app.get('/health', (req, res) => {
 // ============================================================
 // API ROUTES
 // ============================================================
-app.use('/api/dispatch',  dispatchLimiter, dispatchRoutes);
+app.use('/api/auth',      authRoutes);
+app.use('/api/dispatch',  dispatchLimiter, requireAuth, requireRole('admin', 'dispatcher'), dispatchRoutes);
 app.use('/api/hospitals', hospitalRoutes);
 app.use('/api/patients',  patientRoutes);
-app.use('/api/chat',      chatRoutes);
+app.use('/api/chat',      requireAuth, chatRoutes);
 
 // ============================================================
 // FRONTEND INTEGRATION

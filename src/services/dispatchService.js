@@ -40,6 +40,7 @@ const dispatchPatient = async (patientData) => {
       coordinates: [patientData.incident_longitude, patientData.incident_latitude]
     },
     incident_address: patientData.incident_address,
+    dispatched_unit: patientData.dispatched_unit || null,
     status: 'pending',
     updated_at: new Date(),
     created_at: new Date()

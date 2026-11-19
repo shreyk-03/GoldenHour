@@ -37,8 +37,16 @@ const patientVitalsSchema = Joi.object({
     .messages({ 'any.required': 'Incident longitude is required' }),
   incident_address: Joi.string().max(500).optional(),
 
+  dispatched_unit: Joi.string().max(50).optional(),
 
   mce_id: Joi.string().max(100).optional(),
+});
+
+const loginSchema = Joi.object({
+  email: Joi.string().email().max(200).required()
+    .messages({ 'any.required': 'Email is required' }),
+  password: Joi.string().min(6).max(200).required()
+    .messages({ 'any.required': 'Password is required' }),
 });
 
 const batchDispatchSchema = Joi.object({
@@ -89,6 +97,7 @@ const validate = (schema) => (req, res, next) => {
 module.exports = {
   validate,
   patientVitalsSchema,
+  loginSchema,
   batchDispatchSchema,
   hospitalCapacityUpdateSchema,
   rerouteSchema,

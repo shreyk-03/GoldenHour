@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { asyncHandler } = require('../middleware/errorHandler');
 const { getDB, ObjectId } = require('../db/store');
+const { requireAuth } = require('../middleware/auth');
 const { getRandomVitals, getMultipleRandomVitals } = require('../services/vitalsDataService');
 
 /**
@@ -28,7 +29,7 @@ router.get('/vitals/random', asyncHandler(async (req, res) => {
  * GET /api/patients
  * List all patients with optional filters
  */
-router.get('/', asyncHandler(async (req, res) => {
+router.get('/', requireAuth, asyncHandler(async (req, res) => {
   const { status, severity, limit = 50, offset = 0 } = req.query;
   const db = getDB();
 
@@ -55,12 +56,16 @@ router.get('/', asyncHandler(async (req, res) => {
         .filter((dispatch) => String(dispatch.patient_id) === String(patient._id))
         .sort((a, b) => String(b.dispatched_at).localeCompare(String(a.dispatched_at)))[0];
       const hospital = latest ? hospitals.find((entry) => entry.id === latest.assigned_hospital_id) : null;
+      const coordinates = hospital?.location?.coordinates || [];
 
       patient.assigned_hospital_id = latest?.assigned_hospital_id;
       patient.assigned_hospital_name = hospital?.name;
+      patient.assigned_hospital_latitude = coordinates[1] ?? hospital?.latitude;
+      patient.assigned_hospital_longitude = coordinates[0] ?? hospital?.longitude;
       patient.estimated_transit_minutes = latest?.estimated_transit_minutes;
       patient.dispatched_at = latest?.dispatched_at;
       patient.arrived_at = latest?.arrived_at;
+      patient.routing_rationale_text = latest?.routing_rationale?.rationale || null;
     }
   }
 
@@ -71,7 +76,7 @@ router.get('/', asyncHandler(async (req, res) => {
  * GET /api/patients/:id
  * Get full patient record with dispatch history
  */
-router.get('/:id', asyncHandler(async (req, res) => {
+router.get('/:id', requireAuth, asyncHandler(async (req, res) => {
   const db = getDB();
   
   let patientId;
@@ -116,7 +121,7 @@ router.get('/:id', asyncHandler(async (req, res) => {
  * GET /api/patients/analytics/summary
  * Dashboard summary stats
  */
-router.get('/analytics/summary', asyncHandler(async (req, res) => {
+router.get('/analytics/summary', requireAuth, asyncHandler(async (req, res) => {
   const db = getDB();
   const now = new Date();
   const oneHourAgo = new Date(now.getTime() - (60 * 60 * 1000));
