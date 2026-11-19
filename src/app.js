@@ -15,6 +15,7 @@ const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
 const { requireAuth, requireRole } = require('./middleware/auth');
 
 const app = express();
+app.set('trust proxy', 1);
 
 // ============================================================
 // SECURITY & MIDDLEWARE
