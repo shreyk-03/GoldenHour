@@ -11,10 +11,17 @@ const { getWebSocketBroadcaster } = require('../websocket/broadcaster');
  * GET /api/hospitals
  * Get all hospitals with current capacity and specialist status
  */
-router.get('/', asyncHandler(async (req, res) => {
+router.get('/', requireAuth, asyncHandler(async (req, res) => {
+  if (req.user.role === 'hospital' && !req.user.hospital_id) {
+    return res.status(403).json({ success: false, error: 'Hospital scope is not configured for this account' });
+  }
+
   const db = getDB();
+  const filter = { is_active: true };
+  if (req.user.role === 'hospital') filter.id = req.user.hospital_id;
+
   const hospitals = await db.collection('hospitals')
-    .find({ is_active: true })
+    .find(filter)
     .sort({ trauma_level: 1, name: 1 })
     .toArray();
 
@@ -25,7 +32,11 @@ router.get('/', asyncHandler(async (req, res) => {
  * GET /api/hospitals/:id
  * Get single hospital with full details
  */
-router.get('/:id', asyncHandler(async (req, res) => {
+router.get('/:id', requireAuth, asyncHandler(async (req, res) => {
+  if (req.user.role === 'hospital' && req.user.hospital_id !== req.params.id) {
+    return res.status(404).json({ success: false, error: 'Hospital not found' });
+  }
+
   const db = getDB();
   const hospital = await db.collection('hospitals').findOne({ id: req.params.id });
 
@@ -97,7 +108,7 @@ router.patch('/:id/capacity', requireAuth, requireRole('admin', 'hospital'), req
  * GET /api/hospitals/:id/capacity/history
  * Get capacity history for analytics
  */
-router.get('/:id/capacity/history', requireAuth, asyncHandler(async (req, res) => {
+router.get('/:id/capacity/history', requireAuth, requireHospitalScope('id'), asyncHandler(async (req, res) => {
   const { hours = 24 } = req.query;
   const db = getDB();
   
