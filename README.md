@@ -22,7 +22,7 @@ EMT Reports Vitals
          │
          ▼
 ┌─────────────────────┐
-│   Dispatch Service   │  Writes to MongoDB, caches in MongoDB, broadcasts via WebSocket
+│   Dispatch Service   │  Writes to Upstash Redis (lock + versioned CAS), broadcasts via WebSocket
 └─────────────────────┘
 ```
 

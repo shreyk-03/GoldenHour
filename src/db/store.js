@@ -53,7 +53,81 @@ const readAll = async (name) => {
   return typeof raw === 'string' ? JSON.parse(raw) : raw;
 };
 
-const writeAll = (name, docs) => clientFor().set(PREFIX + name, docs);
+const WRITE_MAX_ATTEMPTS = 3;
+const LOCK_TTL_MS = 10_000;
+const LOCK_WAIT_ATTEMPTS = 300;
+
+// Collections are single JSON blobs, so plain read-modify-write loses concurrent
+// updates. Writers take a short-lived lock, then commit with a versioned
+// compare-and-set so an expired lock still cannot clobber another writer.
+const WRITE_IF_UNCHANGED = `
+local current = redis.call('GET', KEYS[2])
+if not current then current = '0' end
+if tostring(current) ~= ARGV[2] then return 0 end
+redis.call('SET', KEYS[1], ARGV[1])
+redis.call('INCR', KEYS[2])
+return 1
+`;
+
+const RELEASE_IF_OWNER = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end
+`;
+
+const versionKey = (name) => `${PREFIX}${name}:version`;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const withCollectionLock = async (name, work) => {
+  const lockKey = `${PREFIX}${name}:lock`;
+  const token = randomBytes(12).toString('hex');
+
+  for (let attempt = 0; attempt < LOCK_WAIT_ATTEMPTS; attempt++) {
+    const acquired = await clientFor().set(lockKey, token, { nx: true, px: LOCK_TTL_MS });
+    if (acquired) {
+      try {
+        return await work();
+      } finally {
+        await clientFor().eval(RELEASE_IF_OWNER, [lockKey], [token]).catch(() => {});
+      }
+    }
+    await sleep(5 + Math.floor(Math.random() * 15));
+  }
+
+  const err = new Error(`Timed out waiting for a write lock on '${name}'`);
+  err.statusCode = 503;
+  throw err;
+};
+
+const readSnapshot = async (name) => {
+  const [raw, version] = await clientFor().mget(PREFIX + name, versionKey(name));
+  const docs = !raw ? [] : typeof raw === 'string' ? JSON.parse(raw) : raw;
+  return { docs, version: version === null || version === undefined ? '0' : String(version) };
+};
+
+const writeSnapshot = (name, docs, expectedVersion) =>
+  clientFor().eval(
+    WRITE_IF_UNCHANGED,
+    [PREFIX + name, versionKey(name)],
+    [JSON.stringify(docs), expectedVersion]
+  );
+
+const commit = async (name, mutate) => {
+  for (let attempt = 0; attempt < WRITE_MAX_ATTEMPTS; attempt++) {
+    const outcome = await withCollectionLock(name, async () => {
+      const { docs, version } = await readSnapshot(name);
+      const result = mutate(docs);
+      if (result && result.noWrite) return { applied: true, value: result.value };
+      const applied = (await writeSnapshot(name, docs, version)) === 1;
+      return { applied, value: result ? result.value : undefined };
+    });
+    if (outcome.applied) return outcome.value;
+    await sleep(10 + Math.floor(Math.random() * 30));
+  }
+
+  const err = new Error(`Write conflict on '${name}' — too many concurrent writers`);
+  err.statusCode = 503;
+  throw err;
+};
 
 const norm = (value) => {
   if (value instanceof ObjectId) return value.toHexString();
@@ -153,6 +227,18 @@ const applyUpdate = (doc, update, isInsert) => {
   }
 };
 
+const buildUpsertDoc = (filter, update) => {
+  const doc = {};
+  for (const [path, value] of Object.entries(filter)) {
+    if (path.includes('$') || value instanceof RegExp) continue;
+    if (value && typeof value === 'object' && !(value instanceof Date) && !(value instanceof ObjectId)) continue;
+    setAt(doc, path, value);
+  }
+  applyUpdate(doc, update, true);
+  if (doc._id === undefined) doc._id = new ObjectId().toHexString();
+  return doc;
+};
+
 const sorter = (spec) => (a, b) => {
   for (const [path, direction] of Object.entries(spec)) {
     const result = compare(valueAt(a, path), valueAt(b, path));
@@ -190,77 +276,75 @@ const collection = (name) => ({
   },
 
   async insertOne(doc) {
-    const docs = await readAll(name);
-    if (doc._id === undefined) doc._id = new ObjectId().toHexString();
-    docs.push(doc);
-    await writeAll(name, docs);
-    return { insertedId: doc._id };
+    return commit(name, (docs) => {
+      if (doc._id === undefined) doc._id = new ObjectId().toHexString();
+      docs.push(doc);
+      return { value: { insertedId: doc._id } };
+    });
   },
 
   async insertMany(newDocs) {
-    const docs = await readAll(name);
-    for (const doc of newDocs) {
-      if (doc._id === undefined) doc._id = new ObjectId().toHexString();
-      docs.push(doc);
-    }
-    await writeAll(name, docs);
-    return { insertedCount: newDocs.length, insertedIds: newDocs.map((doc) => doc._id) };
+    return commit(name, (docs) => {
+      for (const doc of newDocs) {
+        if (doc._id === undefined) doc._id = new ObjectId().toHexString();
+        docs.push(doc);
+      }
+      return {
+        value: { insertedCount: newDocs.length, insertedIds: newDocs.map((doc) => doc._id) },
+      };
+    });
   },
 
   async updateOne(filter, update, options = {}) {
-    const docs = await readAll(name);
-    let candidates = docs.filter((doc) => matches(doc, filter));
-    if (options.sort) candidates.sort(sorter(options.sort));
+    return commit(name, (docs) => {
+      const candidates = docs.filter((doc) => matches(doc, filter));
+      if (options.sort) candidates.sort(sorter(options.sort));
 
-    if (candidates.length === 0) {
-      if (!options.upsert) return { matchedCount: 0, modifiedCount: 0 };
-      const inserted = await this.findOneAndUpdate(filter, update, { ...options, upsert: true, returnDocument: 'after' });
-      return { matchedCount: 0, modifiedCount: 0, upsertedId: inserted?._id };
-    }
+      if (candidates.length === 0) {
+        if (!options.upsert) return { value: { matchedCount: 0, modifiedCount: 0 } };
+        const doc = buildUpsertDoc(filter, update);
+        docs.push(doc);
+        return { value: { matchedCount: 0, modifiedCount: 0, upsertedId: doc._id } };
+      }
 
-    applyUpdate(candidates[0], update, false);
-    await writeAll(name, docs);
-    return { matchedCount: 1, modifiedCount: 1 };
+      applyUpdate(candidates[0], update, false);
+      return { value: { matchedCount: 1, modifiedCount: 1 } };
+    });
   },
 
   async findOneAndUpdate(filter, update, options = {}) {
-    const docs = await readAll(name);
-    let index = docs.findIndex((doc) => matches(doc, filter));
+    return commit(name, (docs) => {
+      const index = docs.findIndex((doc) => matches(doc, filter));
 
-    if (index === -1) {
-      if (!options.upsert) return null;
-      const doc = {};
-      for (const [path, value] of Object.entries(filter)) {
-        if (path.includes('$') || value instanceof RegExp) continue;
-        if (value && typeof value === 'object' && !(value instanceof Date) && !(value instanceof ObjectId)) continue;
-        setAt(doc, path, value);
+      if (index === -1) {
+        if (!options.upsert) return { value: null, noWrite: true };
+        const doc = buildUpsertDoc(filter, update);
+        docs.push(doc);
+        return { value: doc };
       }
-      applyUpdate(doc, update, true);
-      if (doc._id === undefined) doc._id = new ObjectId().toHexString();
-      docs.push(doc);
-      await writeAll(name, docs);
-      return doc;
-    }
 
-    applyUpdate(docs[index], update, false);
-    await writeAll(name, docs);
-    return docs[index];
+      applyUpdate(docs[index], update, false);
+      return { value: docs[index] };
+    });
   },
 
   async deleteOne(filter) {
-    const docs = await readAll(name);
-    const index = docs.findIndex((doc) => matches(doc, filter));
-    if (index === -1) return { deletedCount: 0 };
-    docs.splice(index, 1);
-    await writeAll(name, docs);
-    return { deletedCount: 1 };
+    return commit(name, (docs) => {
+      const index = docs.findIndex((doc) => matches(doc, filter));
+      if (index === -1) return { value: { deletedCount: 0 }, noWrite: true };
+      docs.splice(index, 1);
+      return { value: { deletedCount: 1 } };
+    });
   },
 
   async deleteMany(filter = {}) {
-    const docs = await readAll(name);
-    const kept = docs.filter((doc) => !matches(doc, filter));
-    await writeAll(name, kept);
-    return { deletedCount: docs.length - kept.length };
+    return commit(name, (docs) => {
+      const kept = docs.filter((doc) => !matches(doc, filter));
+      const deletedCount = docs.length - kept.length;
+      if (deletedCount === 0) return { value: { deletedCount: 0 }, noWrite: true };
+      docs.splice(0, docs.length, ...kept);
+      return { value: { deletedCount } };
+    });
   },
 
   async createIndex() {
