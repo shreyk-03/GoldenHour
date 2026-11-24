@@ -2,7 +2,7 @@
 import * as tf from '@tensorflow/tfjs';
 import * as mobilenet from '@tensorflow-models/mobilenet';
 import '@tensorflow/tfjs-backend-webgl';
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMapEvents, useMap } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
@@ -24,19 +24,7 @@ L.Icon.Default.mergeOptions({
   shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
 });
 
-// Same-origin when unset: Vite dev proxies /api and /ws; production build is served by Express with the API.
-function getWebSocketUrl(): string {
-  if (API_BASE) {
-    return `${API_BASE.replace(/^http/, 'ws')}/ws`;
-  }
-  if (typeof window !== 'undefined') {
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${proto}//${window.location.host}/ws`;
-  }
-  return 'ws://localhost:3001/ws';
-}
-
-const WS_URL = getWebSocketUrl();
+// Same-origin when unset: Vite dev proxies /api; production serves the API alongside the build.
 
 // Custom Icons
 
@@ -187,6 +175,7 @@ function MapController({ center }: { center: [number, number] | null }) {
 
 export default function App() {
   const [hospitals, setHospitals] = useState<Hospital[]>(INITIAL_HOSPITALS);
+  const hospitalsRef = useRef<Hospital[]>([]);
   const [patients, setPatients] = useState<Patient[]>(INITIAL_PATIENTS);
   const [isMassCasualty, setIsMassCasualty] = useState(false);
   const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null);
@@ -450,92 +439,46 @@ export default function App() {
   };
 
 
+  // Restore active missions and keep the dashboard in sync. Change detection is
+  // pushed from the server as collection version counters (SSE); only the
+  // collections whose version moved are refetched.
   useEffect(() => {
     if (!authUser) return;
+    let cancelled = false;
+    hospitalsRef.current = [];
 
     const fetchHospitals = async () => {
       try {
         const res = await authFetch(`${API_BASE}/api/hospitals`);
         const data = await res.json();
-        if (data.success) {
-          setHospitals(data.data.map(mapHospital));
+        if (cancelled || !data.success) return;
+
+        const nextHospitals: Hospital[] = data.data.map(mapHospital);
+        const previous = new Map(hospitalsRef.current.map(h => [h.id, h]));
+
+        const feedEntries: { id: string; text: string; time: string; type: 'up' | 'down' }[] = [];
+        for (const hospital of nextHospitals) {
+          const before = previous.get(hospital.id);
+          if (!before) continue;
+          const loadDelta = hospital.load - before.load;
+          if (hospital.icuAvailable === before.icuAvailable
+            && hospital.ventsAvailable === before.ventsAvailable
+            && loadDelta === 0) continue;
+          feedEntries.push({
+            id: `${Date.now()}-${hospital.id}`,
+            text: `${hospital.name}: capacity updated (load ${loadDelta > 0 ? '+' : ''}${loadDelta}%)`,
+            time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+            type: loadDelta > 0 ? 'up' : 'down',
+          });
         }
+
+        hospitalsRef.current = nextHospitals;
+        setHospitals(nextHospitals);
+        if (feedEntries.length) setLiveUpdates(prev => [...feedEntries, ...prev].slice(0, 8));
       } catch (e) {
         console.error('Error fetching hospitals', e);
       }
     };
-    
-    fetchHospitals();
-
-    // Setup WebSocket with auto-reconnect (dev). Vercel serverless has no persistent
-    // WebSocket endpoint here, so production falls back to polling.
-    let ws: WebSocket | undefined;
-    let reconnectTimeout: any;
-
-    const connectWS = () => {
-      ws = new WebSocket(WS_URL);
-      
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          
-          if (data.type === 'HOSPITAL_CAPACITY_UPDATED') {
-            // Update the specific hospital inline (no full refetch needed)
-            setHospitals(prev => prev.map(h => {
-              if (String(h.id) === String(data.hospitalId)) {
-                return {
-                  ...h,
-                  icuAvailable: data.changes.icu_beds_available.to,
-                  ventsAvailable: data.changes.ventilators_available.to,
-                  load: data.changes.current_load_percent.to,
-                };
-              }
-              return h;
-            }));
-
-            // Add to live activity feed
-            const loadChange = data.changes.current_load_percent.to - data.changes.current_load_percent.from;
-            const feedEntry = {
-              id: `${Date.now()}-${data.hospitalId}`,
-              text: `${data.hospitalName}: ${data.event} (Load ${loadChange > 0 ? '+' : ''}${loadChange}%)`,
-              time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-              type: (loadChange > 0 ? 'up' : 'down') as 'up' | 'down',
-            };
-            setLiveUpdates(prev => [feedEntry, ...prev].slice(0, 8));
-          }
-
-          if (data.type === 'DISPATCH_COMPLETE') {
-            fetchHospitals(); // Full refresh after a dispatch
-          }
-        } catch (e) {}
-      };
-
-      ws.onclose = () => {
-        // Auto-reconnect after 3 seconds
-        reconnectTimeout = setTimeout(connectWS, 3000);
-      };
-
-      ws.onerror = () => ws.close();
-    };
-
-    let pollId: ReturnType<typeof setInterval> | undefined;
-    if (import.meta.env.DEV) {
-      connectWS();
-    } else {
-      pollId = setInterval(fetchHospitals, 5000);
-    }
-
-    return () => {
-      clearTimeout(reconnectTimeout);
-      ws?.close();
-      if (pollId) clearInterval(pollId);
-    };
-  }, [authUser]);
-
-  // Restore active missions from the store and keep them in sync
-  useEffect(() => {
-    if (!authUser) return;
-    let cancelled = false;
 
     const fetchMissions = async () => {
       try {
@@ -572,11 +515,50 @@ export default function App() {
       }
     };
 
+    const seenVersions: Record<string, string> = {};
+    const applyVersions = (raw: string) => {
+      if (cancelled) return;
+      let versions: Record<string, string>;
+      try {
+        versions = JSON.parse(raw);
+      } catch {
+        return;
+      }
+
+      const seeded = seenVersions.hospitals !== undefined;
+      const hospitalsChanged = versions.hospitals !== seenVersions.hospitals;
+      const missionsChanged = versions.patients !== seenVersions.patients
+        || versions.dispatches !== seenVersions.dispatches;
+      Object.assign(seenVersions, versions);
+
+      // The first payload only records the baseline; the initial load covers it.
+      if (!seeded) return;
+      if (hospitalsChanged) fetchHospitals();
+      if (missionsChanged) fetchMissions();
+    };
+
+    fetchHospitals();
     fetchMissions();
-    const interval = setInterval(fetchMissions, 15000);
+
+    const events = new EventSource(`${API_BASE}/api/events`);
+    events.addEventListener('change', (event) => applyVersions((event as MessageEvent).data));
+
+    // Safety net for dropped streams: reconcile slowly and on tab refocus.
+    const reconcile = () => {
+      fetchHospitals();
+      fetchMissions();
+    };
+    const safetyPoll = setInterval(reconcile, 60000);
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') reconcile();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+
     return () => {
       cancelled = true;
-      clearInterval(interval);
+      events.close();
+      clearInterval(safetyPoll);
+      document.removeEventListener('visibilitychange', onVisibility);
     };
   }, [authUser]);
 
@@ -1280,7 +1262,7 @@ export default function App() {
           id: `${Date.now()}-${patientId}-${status}`,
           text: `${patientId}: mission marked ${status.toUpperCase()} by ${authUser?.name || authUser?.email || 'operator'}`,
           time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-          type: 'down',
+          type: 'down' as const,
         },
         ...prev,
       ].slice(0, 8));
@@ -2120,7 +2102,7 @@ export default function App() {
               </div>
             ) : (
               <span className="text-slate-500 text-sm italic px-6">
-                {import.meta.env.DEV ? 'Connecting to dispatch network...' : 'Live network sync active · refreshing every 5s'}
+                Live network sync active · streaming changes
               </span>
             )}
           </div>

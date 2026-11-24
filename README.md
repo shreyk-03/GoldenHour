@@ -22,7 +22,7 @@ EMT Reports Vitals
          │
          ▼
 ┌─────────────────────┐
-│   Dispatch Service   │  Writes to Upstash Redis (lock + versioned CAS), broadcasts via WebSocket
+│   Dispatch Service   │  Writes to Upstash Redis (lock + versioned CAS); each write bumps the collection's change counter
 └─────────────────────┘
 ```
 
@@ -36,7 +36,7 @@ EMT Reports Vitals
 | Framework | Express.js |
 | Database | Upstash Redis (provisioned through Vercel) |
 | Cache | Same document store (TTL collection) |
-| Real-time | WebSocket (ws) locally, polling on Vercel |
+| Real-time | SSE change stream (versioned Redis counters); WebSocket for local simulation |
 | Routing API | OpenRouteService (free) / Haversine fallback |
 | Validation | Joi |
 
@@ -231,7 +231,7 @@ Update patient status as journey progresses.
 ```
 Valid statuses: `en_route` → `arrived` → `treated` | `cancelled`
 
-Missions are persisted with their `incident_id` and status, so the dashboard restores active work after a page reload (`GET /api/patients` hydration + 15s polling) and `arrived` / `treated` updates survive refreshes.
+Missions are persisted with their `incident_id` and status, so the dashboard restores active work after a page reload (`GET /api/patients` hydration) and `arrived` / `treated` updates survive refreshes. Status changes from any client arrive on other dashboards through the change stream (typically within ~2.5s), with a 60s safety reconcile and a refresh when the tab regains focus.
 
 ---
 
@@ -244,7 +244,7 @@ Returns all hospitals with live capacity and on-duty specialists.
 Single hospital with full details.
 
 #### `PATCH /api/hospitals/:id/capacity`
-Update live capacity — called by hospital management systems. Invalidates Redis cache + broadcasts WebSocket event.
+Update live capacity — called by hospital management systems. Invalidates Redis cache; connected dashboards pick the change up through the SSE change stream.
 
 ```json
 {
@@ -274,7 +274,27 @@ Capacity trend data for a hospital over the last N hours.
 
 ---
 
-## WebSocket Events
+### 📡 Change Stream
+
+#### `GET /api/events`
+Server-Sent Events stream of per-collection version counters. Every write to a collection bumps its counter, so a counter change means that collection's data moved. The payload is counters only — no patient data — which is why the stream needs no auth (`EventSource` cannot send an `Authorization` header); records still come from the authenticated JSON routes.
+
+```text
+retry: 3000
+
+event: change
+data: {"patients":"9","dispatches":"5","hospitals":"5"}
+```
+
+Each connection reads the counters with a single `MGET` every 2.5s, emits `change` when they differ, writes a keep-alive comment otherwise, and closes after 25s. `EventSource` reconnects automatically, so no serverless invocation outlives the platform limit.
+
+The dashboard subscribes to this stream and refetches only the collections whose counter moved. A 60s reconcile and a refetch on tab refocus cover dropped streams.
+
+---
+
+## WebSocket Events (local simulation)
+
+Running the server directly also starts the capacity simulator and exposes `ws://localhost:3000/ws`. Vercel functions are isolated per request, so this socket is a local development aid — deployed dashboards use the change stream above.
 
 Connect to `ws://localhost:3000/ws`
 

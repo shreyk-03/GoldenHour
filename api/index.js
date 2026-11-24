@@ -5,6 +5,7 @@ const hasStoreConfig = isConfigured();
 
 const needsDatabase = (url) =>
   url.startsWith('/api/auth') ||
+  url.startsWith('/api/events') ||
   url.startsWith('/api/hospitals') ||
   url.startsWith('/api/dispatch') ||
   (url.startsWith('/api/patients') && !url.startsWith('/api/patients/vitals'));

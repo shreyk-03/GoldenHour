@@ -11,6 +11,7 @@ const hospitalRoutes  = require('./routes/hospitals');
 const patientRoutes   = require('./routes/patients');
 const chatRoutes      = require('./routes/chat');
 const authRoutes      = require('./routes/auth');
+const eventRoutes     = require('./routes/events');
 const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
 const { requireAuth, requireRole } = require('./middleware/auth');
 
@@ -55,6 +56,7 @@ app.get('/health', (req, res) => {
 // API ROUTES
 // ============================================================
 app.use('/api/auth',      authRoutes);
+app.use('/api/events',    eventRoutes);
 app.use('/api/dispatch',  dispatchLimiter, requireAuth, requireRole('admin', 'dispatcher'), dispatchRoutes);
 app.use('/api/hospitals', hospitalRoutes);
 app.use('/api/patients',  patientRoutes);

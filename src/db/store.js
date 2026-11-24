@@ -104,6 +104,14 @@ const readSnapshot = async (name) => {
   return { docs, version: version === null || version === undefined ? '0' : String(version) };
 };
 
+// Cheap cross-instance change detection: one MGET for all requested collections.
+const getCollectionVersions = async (names) => {
+  const values = await clientFor().mget(...names.map(versionKey));
+  return Object.fromEntries(
+    names.map((name, index) => [name, values[index] === null || values[index] === undefined ? '0' : String(values[index])])
+  );
+};
+
 const writeSnapshot = (name, docs, expectedVersion) =>
   clientFor().eval(
     WRITE_IF_UNCHANGED,
@@ -371,4 +379,4 @@ const client = {
   async close() {},
 };
 
-module.exports = { ObjectId, connectDB, getDB, isConfigured, client };
+module.exports = { ObjectId, connectDB, getDB, getCollectionVersions, isConfigured, client };
