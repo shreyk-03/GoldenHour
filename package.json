@@ -12,7 +12,8 @@
     "dev:server": "nodemon src/server.js",
     "dev:client": "cd frontend && npm run dev",
     "build": "cd frontend && npm install && npm run build",
-    "seed": "node src/db/seed.js"
+    "seed": "node src/db/seed.js",
+    "test": "node --test \"test/**/*.test.js\""
   },
   "dependencies": {
     "@upstash/redis": "^1.35.0",

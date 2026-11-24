@@ -83,6 +83,14 @@ npm start
 Server starts at: `http://localhost:3000`  
 WebSocket at: `ws://localhost:3000/ws`
 
+### 6. Tests
+```bash
+npm test                                            # backend unit tests (node:test)
+cd frontend && npm run lint && npm run build        # frontend typecheck + production build
+```
+
+CI (`.github/workflows/ci.yml`) runs the backend suite and the frontend typecheck/build on every push to `main` and every pull request.
+
 ---
 
 ## Authentication & Roles
@@ -385,4 +393,11 @@ src/
 │   └── errorHandler.js       # Global error + 404 handlers
 └── websocket/
     └── broadcaster.js        # WebSocket server + event emitter
+
+test/
+├── severityPredictor.test.js  # NEWS2 scoring cases
+├── routingService.test.js     # Haversine + transit fallback
+└── auth.test.js               # JWT, roles, hospital scope
+
+.github/workflows/ci.yml      # Backend tests + frontend typecheck/build
 ```
