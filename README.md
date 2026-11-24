@@ -65,6 +65,14 @@ cp .env.example .env
 # Set JWT_SECRET (any long random string, e.g. `openssl rand -hex 48`)
 ```
 
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `JWT_SECRET` | ✅ | Signs session tokens; the server fails fast if missing |
+| `KV_REST_API_URL` / `KV_REST_API_TOKEN` | ✅ | Upstash Redis REST credentials (provisioned by the Vercel integration) |
+| `FRONTEND_URL` | — | CORS origin; defaults to same-origin wildcard |
+| `ORS_API_KEY` | — | Real road distances and ETAs; falls back to Haversine × 1.3 road factor |
+| `GEMINI_API_KEY` | — | AI dispatcher chat; falls back to built-in local replies |
+
 ### 4. Setup Database
 ```bash
 # Seed hospitals, specialists and the three demo users
