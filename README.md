@@ -108,7 +108,9 @@ curl -X POST http://localhost:3000/api/auth/login \
 | Create / reroute / batch dispatches | ✅ | ✅ | ❌ |
 | Change mission status | ✅ | ✅ | ❌ |
 | Update capacity / specialists | ✅ | ❌ | own hospital only |
-| Read hospitals, patients, analytics | ✅ | ✅ | ✅ |
+| Read hospitals, patients, analytics | ✅ | ✅ | own hospital only |
+
+Hospital operators get a scoped view: the dashboard shows only their facility, the mission feed and patient list contain only missions routed to them, and the capacity panel replaces the triage form.
 
 ### Auth endpoints
 
@@ -267,7 +269,7 @@ Toggle specialist on-duty status.
 ### 📊 Analytics Endpoints
 
 #### `GET /api/patients/analytics/summary`
-Dashboard summary — patient counts by severity, system-wide capacity, avg transit time.
+Dashboard summary — patient counts by severity, system-wide capacity, avg transit time. Dispatchers and admins see the whole network; hospital accounts see only their facility's missions and capacity. The dashboard renders these numbers as a six-stat KPI strip above the hospital grid.
 
 #### `GET /api/hospitals/:id/capacity/history?hours=24`
 Capacity trend data for a hospital over the last N hours.

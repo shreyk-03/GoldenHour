@@ -33,9 +33,20 @@ router.get('/', requireAuth, asyncHandler(async (req, res) => {
   const { status, severity, limit = 50, offset = 0 } = req.query;
   const db = getDB();
 
+  if (req.user.role === 'hospital' && !req.user.hospital_id) {
+    return res.status(403).json({ success: false, error: 'Hospital scope is not configured for this account' });
+  }
+  const scopeHospitalId = req.user.role === 'hospital' ? req.user.hospital_id : null;
+
   const queryObj = {};
   if (status) queryObj.status = status;
   if (severity) queryObj.severity_level = severity;
+
+  // Hospital operators only see missions routed to their own facility.
+  if (scopeHospitalId) {
+    const scoped = await db.collection('dispatches').find({ assigned_hospital_id: scopeHospitalId }).toArray();
+    queryObj._id = { $in: scoped.map((dispatch) => dispatch.patient_id) };
+  }
 
   // Join against the latest dispatch so the list shows current assignment
   const patients = await db.collection('patients')
@@ -96,6 +107,10 @@ router.get('/:id', requireAuth, asyncHandler(async (req, res) => {
     .sort({ dispatched_at: -1 })
     .toArray();
 
+  if (req.user.role === 'hospital' && !dispatches.some((dispatch) => dispatch.assigned_hospital_id === req.user.hospital_id)) {
+    return res.status(404).json({ success: false, error: 'Patient not found' });
+  }
+
   const hospitals = await db.collection('hospitals').find({}).toArray();
   const enrichedDispatches = dispatches.map((dispatch) => {
     const hospital = hospitals.find((entry) => entry.id === dispatch.assigned_hospital_id);
@@ -127,11 +142,30 @@ router.get('/analytics/summary', requireAuth, asyncHandler(async (req, res) => {
   const oneHourAgo = new Date(now.getTime() - (60 * 60 * 1000));
   const twentyFourHoursAgo = new Date(now.getTime() - (24 * 60 * 60 * 1000));
 
-  const [patients, dispatches, hospitals] = await Promise.all([
+  // Hospital operators only see their own facility and the missions routed to it.
+  if (req.user.role === 'hospital' && !req.user.hospital_id) {
+    return res.status(403).json({ success: false, error: 'Hospital scope is not configured for this account' });
+  }
+  const scopeHospitalId = req.user.role === 'hospital' ? req.user.hospital_id : null;
+
+  const [allPatients, allDispatches, allHospitals] = await Promise.all([
     db.collection('patients').find({}).toArray(),
     db.collection('dispatches').find({}).toArray(),
     db.collection('hospitals').find({ is_active: true }).toArray(),
   ]);
+
+  const dispatches = scopeHospitalId
+    ? allDispatches.filter((dispatch) => dispatch.assigned_hospital_id === scopeHospitalId)
+    : allDispatches;
+  const scopedPatientIds = scopeHospitalId
+    ? new Set(dispatches.map((dispatch) => String(dispatch.patient_id)))
+    : null;
+  const patients = scopedPatientIds
+    ? allPatients.filter((patient) => scopedPatientIds.has(String(patient._id)))
+    : allPatients;
+  const hospitals = scopeHospitalId
+    ? allHospitals.filter((hospital) => hospital.id === scopeHospitalId)
+    : allHospitals;
 
   const countSeverity = (level) => patients.filter((patient) => patient.severity_level === level).length;
   const average = (values) => {

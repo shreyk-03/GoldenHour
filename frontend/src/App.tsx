@@ -86,6 +86,12 @@ type Patient = {
 const INITIAL_HOSPITALS: Hospital[] = [];
 const INITIAL_PATIENTS: Patient[] = [];
 
+type Analytics = {
+  patients: { total: number; critical: number; high: number; moderate: number; low: number; active_dispatches: number; last_hour: number };
+  dispatches: { avg_transit_minutes: number; avg_routing_score: number; rerouted_count: number };
+  system: { total_hospitals: number; on_diversion: number; total_icu_available: number; total_ventilators_available: number; avg_load_percent: number };
+};
+
 const generateAmbulances = (centerLat: number, centerLng: number) => {
   const names = ['Alpha', 'Bravo', 'Charlie', 'Delta', 'Echo', 'Foxtrot', 'Golf', 'Hotel'];
   return Array.from({length: 8}).map((_, i) => ({
@@ -153,6 +159,83 @@ const mapMission = (m: any): Patient => {
   };
 };
 
+// Hospital operators manage capacity for their own facility instead of dispatching.
+function FacilityCapacityPanel({ hospital, saving, error, onSave }: {
+  hospital?: Hospital;
+  saving: boolean;
+  error: string | null;
+  onSave: (values: { icu: number; vents: number; load: number }) => void;
+}) {
+  const [icu, setIcu] = useState('');
+  const [vents, setVents] = useState('');
+  const [load, setLoad] = useState('');
+
+  useEffect(() => {
+    if (!hospital) return;
+    setIcu(String(hospital.icuAvailable));
+    setVents(String(hospital.ventsAvailable));
+    setLoad(String(hospital.load));
+  }, [hospital?.id, hospital?.icuAvailable, hospital?.ventsAvailable, hospital?.load]);
+
+  const dirty = Boolean(hospital)
+    && (icu !== String(hospital?.icuAvailable) || vents !== String(hospital?.ventsAvailable) || load !== String(hospital?.load));
+
+  const field = (label: string, value: string, setValue: (value: string) => void, suffix: string) => (
+    <div className="space-y-2">
+      <Label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{label}</Label>
+      <div className="relative">
+        <Input
+          type="number"
+          min={0}
+          max={suffix === '%' ? 100 : undefined}
+          value={value}
+          onChange={e => setValue(e.target.value)}
+          className="bg-white/10 border-white/10 text-white font-bold focus:border-blue-500 h-10 px-3 pr-12 rounded-lg"
+        />
+        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-bold text-slate-500">{suffix}</span>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-center gap-2">
+        <HospitalIcon className="h-5 w-5 text-blue-400" />
+        <h2 className="font-semibold text-lg text-white">Facility Capacity</h2>
+        <Badge variant="outline" className="ml-auto text-[9px] bg-blue-500/10 border-blue-500/30 text-blue-300">YOUR FACILITY</Badge>
+      </div>
+
+      <p className="text-[11px] text-slate-400 leading-relaxed">
+        Hospital operators update live capacity for their own facility. Dispatchers and routing see the change instantly.
+      </p>
+
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          onSave({ icu: Number(icu), vents: Number(vents), load: Number(load) });
+        }}
+        className="space-y-4"
+      >
+        {field('ICU beds available', icu, setIcu, hospital ? `/ ${hospital.icuTotal}` : 'beds')}
+        {field('Ventilators available', vents, setVents, hospital ? `/ ${hospital.ventsTotal}` : 'units')}
+        {field('Current load', load, setLoad, '%')}
+
+        <Button
+          type="submit"
+          disabled={!hospital || saving || !dirty}
+          className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-5 rounded-xl shadow-lg transition-all duration-200 active:scale-95 disabled:opacity-40"
+        >
+          {saving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <CheckCircle2 className="h-4 w-4 mr-2" />}
+          {saving ? 'Publishing…' : 'Publish Capacity'}
+        </Button>
+      </form>
+
+      {!hospital && <p className="text-xs text-amber-400">This account is not linked to a facility yet.</p>}
+      {error && <p className="text-xs text-red-400">{error}</p>}
+    </div>
+  );
+}
+
 // Map Helper Components
 function MapEvents({ onLocationSelect }: { onLocationSelect: (lat: number, lng: number) => void }) {
   useMapEvents({
@@ -188,6 +271,9 @@ export default function App() {
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [authChecking, setAuthChecking] = useState(true);
   const [statusUpdating, setStatusUpdating] = useState(false);
+  const [analytics, setAnalytics] = useState<Analytics | null>(null);
+  const [facilitySaving, setFacilitySaving] = useState(false);
+  const [facilityError, setFacilityError] = useState<string | null>(null);
 
   // Validate any stored session on load
   useEffect(() => {
@@ -515,6 +601,17 @@ export default function App() {
       }
     };
 
+    const fetchAnalytics = async () => {
+      try {
+        const res = await authFetch(`${API_BASE}/api/patients/analytics/summary`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled && data.success) setAnalytics(data.data);
+      } catch (e) {
+        console.error('Analytics sync failed', e);
+      }
+    };
+
     const seenVersions: Record<string, string> = {};
     const applyVersions = (raw: string) => {
       if (cancelled) return;
@@ -535,10 +632,12 @@ export default function App() {
       if (!seeded) return;
       if (hospitalsChanged) fetchHospitals();
       if (missionsChanged) fetchMissions();
+      if (hospitalsChanged || missionsChanged) fetchAnalytics();
     };
 
     fetchHospitals();
     fetchMissions();
+    fetchAnalytics();
 
     const events = new EventSource(`${API_BASE}/api/events`);
     events.addEventListener('change', (event) => applyVersions((event as MessageEvent).data));
@@ -547,6 +646,7 @@ export default function App() {
     const reconcile = () => {
       fetchHospitals();
       fetchMissions();
+      fetchAnalytics();
     };
     const safetyPoll = setInterval(reconcile, 60000);
     const onVisibility = () => {
@@ -1273,9 +1373,56 @@ export default function App() {
     }
   };
 
-  const displayedHospitals = visionAnalysis?.override
-    ? hospitals.filter(h => h.hasNeuro && h.hasCathLab)
+  const myHospital = authUser?.role === 'hospital'
+    ? hospitals.find(h => h.id === authUser.hospital_id)
+    : undefined;
+
+  const saveFacilityCapacity = async (values: { icu: number; vents: number; load: number }) => {
+    if (!authUser?.hospital_id || !myHospital) return;
+    const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, Number.isFinite(value) ? Math.round(value) : min));
+
+    setFacilitySaving(true);
+    setFacilityError(null);
+    try {
+      const res = await authFetch(`${API_BASE}/api/hospitals/${authUser.hospital_id}/capacity`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          icu_beds_available: clamp(values.icu, 0, myHospital.icuTotal),
+          ventilators_available: clamp(values.vents, 0, myHospital.ventsTotal),
+          current_load_percent: clamp(values.load, 0, 100),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Capacity update failed');
+
+      const refreshed = mapHospital(data.data);
+      setHospitals(prev => prev.map(h => (h.id === refreshed.id ? refreshed : h)));
+      // Keep the diff baseline in step so the change stream does not double-log this edit.
+      hospitalsRef.current = hospitalsRef.current.map(h => (h.id === refreshed.id ? refreshed : h));
+      setLiveUpdates(prev => [
+        {
+          id: `${Date.now()}-${refreshed.id}`,
+          text: `${refreshed.name}: capacity published by ${authUser.name || authUser.email}`,
+          time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          type: (refreshed.load > myHospital.load ? 'up' : 'down') as 'up' | 'down',
+        },
+        ...prev,
+      ].slice(0, 8));
+    } catch (err: any) {
+      setFacilityError(err?.message || 'Could not update capacity');
+    } finally {
+      setFacilitySaving(false);
+    }
+  };
+
+  const scopedHospitals = authUser?.role === 'hospital'
+    ? hospitals.filter(h => h.id === authUser.hospital_id)
     : hospitals;
+
+  const displayedHospitals = visionAnalysis?.override
+    ? scopedHospitals.filter(h => h.hasNeuro && h.hasCathLab)
+    : scopedHospitals;
 
   if (authChecking) {
     return (
@@ -1346,6 +1493,7 @@ export default function App() {
         {/* Left Sidebar - Triage Input */}
         <div className="w-[380px] bg-[#0B1224] border-r border-white/5 flex flex-col shadow-2xl z-10 shrink-0">
           
+          {authUser.role !== 'hospital' && (
           <div className="p-4 border-b border-white/5 bg-white/5">
             <h2 className="font-semibold text-lg flex items-center gap-2 mb-4 text-white">
               <Activity className="h-5 w-5 text-blue-400" />
@@ -1366,8 +1514,17 @@ export default function App() {
               </Button>
             </div>
           </div>
+          )}
 
           <div className="p-5 overflow-y-auto flex-1 space-y-6">
+            {authUser.role === 'hospital' ? (
+              <FacilityCapacityPanel
+                hospital={myHospital}
+                saving={facilitySaving}
+                error={facilityError}
+                onSave={saveFacilityCapacity}
+              />
+            ) : (
             <form id="triageForm" onSubmit={handleTriageSubmit} className="space-y-6">
 
               {/* Scene Photo AI Vision */}
@@ -1564,6 +1721,7 @@ export default function App() {
               </Button>
 
             </form>
+            )}
 
             <div className="mt-10 border-t border-slate-200 pt-8">
               <h3 className="font-bold text-[10px] text-slate-400 uppercase tracking-[0.2em] mb-4 flex items-center gap-2">
@@ -1797,7 +1955,7 @@ export default function App() {
             )}
             
             <div className="flex gap-2">
-              {hospitals.slice(0, 3).map(h => (
+              {displayedHospitals.slice(0, 3).map(h => (
                 <div key={h.id} className="map-overlay-card p-2 rounded-md flex flex-col gap-1 min-w-[100px]">
                   <div className="text-[10px] uppercase text-gray-400 font-bold truncate">{h.name}</div>
                   <div className="flex justify-between items-center">
@@ -2029,11 +2187,28 @@ export default function App() {
 
           {/* Live Hospital Grid */}
           <div className="p-5 flex-1 overflow-y-auto bg-[#0B1224]">
+            {analytics && (
+              <div className="grid grid-cols-3 gap-2 mb-4">
+                {[
+                  { label: 'Active', value: analytics.patients.active_dispatches, tone: 'text-amber-400' },
+                  { label: 'Critical', value: analytics.patients.critical, tone: 'text-red-400' },
+                  { label: 'Avg transit', value: `${Math.round(analytics.dispatches.avg_transit_minutes)}m`, tone: 'text-blue-400' },
+                  { label: 'Avg score', value: Math.round(analytics.dispatches.avg_routing_score), tone: 'text-emerald-400' },
+                  { label: 'ICU free', value: analytics.system.total_icu_available, tone: 'text-green-400' },
+                  { label: 'Avg load', value: `${Math.round(analytics.system.avg_load_percent)}%`, tone: 'text-slate-300' },
+                ].map(stat => (
+                  <div key={stat.label} className="bg-white/[0.03] border border-white/5 rounded-lg px-2.5 py-2">
+                    <div className={`text-sm font-black leading-none ${stat.tone}`}>{stat.value}</div>
+                    <div className="text-[8px] font-bold uppercase tracking-widest text-slate-500 mt-1">{stat.label}</div>
+                  </div>
+                ))}
+              </div>
+            )}
             <h2 className="font-semibold text-lg flex items-center gap-2 mb-4 text-white">
               <Activity className="h-5 w-5 text-red-500" />
-              Live Regional Grid
+              {authUser.role === 'hospital' ? 'Facility Status' : 'Live Regional Grid'}
               {visionAnalysis?.override && <span className="ml-2 text-[10px] text-red-400 font-semibold bg-red-500/10 border border-red-500/20 px-1.5 py-0.5 rounded">Vision Override</span>}
-              <span className="ml-auto text-xs text-gray-500 font-normal">{displayedHospitals.length} units</span>
+              <span className="ml-auto text-xs text-gray-500 font-normal">{displayedHospitals.length} unit{displayedHospitals.length === 1 ? '' : 's'}</span>
             </h2>
             
             <div className="space-y-3">
