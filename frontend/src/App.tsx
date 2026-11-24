@@ -1,7 +1,4 @@
 /// <reference types="vite/client" />
-import * as tf from '@tensorflow/tfjs';
-import * as mobilenet from '@tensorflow-models/mobilenet';
-import '@tensorflow/tfjs-backend-webgl';
 import React, { useState, useEffect, useRef } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMapEvents, useMap } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -58,6 +55,24 @@ const fetchRoute = async (start: [number, number], end: [number, number]): Promi
     console.error('OSRM route fetch error:', e);
   }
   return [start, end];
+};
+
+// TensorFlow and MobileNet weigh ~1.8MB, so they load only when a scene photo is analyzed.
+let visionModelPromise: Promise<any> | null = null;
+const loadVisionModel = () => {
+  if (!visionModelPromise) {
+    visionModelPromise = (async () => {
+      await import('@tensorflow/tfjs-backend-webgl');
+      const tf = await import('@tensorflow/tfjs');
+      const mobilenet = await import('@tensorflow-models/mobilenet');
+      await tf.ready();
+      return mobilenet.load({ version: 2, alpha: 1.0 });
+    })().catch((err) => {
+      visionModelPromise = null;
+      throw err;
+    });
+  }
+  return visionModelPromise;
 };
 
 type Patient = {
@@ -338,7 +353,7 @@ export default function App() {
   const [goldenHourTimer, setGoldenHourTimer] = useState<number | null>(null); // Seconds remaining
 
   const [mobilenetModel, setMobilenetModel] = useState<any>(null);
-  const [isModelLoading, setIsModelLoading] = useState(true);
+  const [isModelLoading, setIsModelLoading] = useState(false);
   const [hasAutoDispatched, setHasAutoDispatched] = useState(false);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
@@ -433,24 +448,6 @@ export default function App() {
      setAvailableAmbulances(generateAmbulances(18.5204, 73.8567));
   }, []);
 
-  // Load TensorFlow MobileNet model on startup
-  useEffect(() => {
-    let active = true;
-    async function loadModel() {
-      try {
-        await tf.ready();
-        const model = await mobilenet.load({ version: 2, alpha: 1.0 });
-        if (active) setMobilenetModel(model);
-      } catch (err) {
-        console.error('Failed to load Vision Model:', err);
-      } finally {
-        if (active) setIsModelLoading(false);
-      }
-    }
-    loadModel();
-    return () => { active = false; };
-  }, []);
-
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -464,9 +461,14 @@ export default function App() {
       const img = document.createElement('img');
       img.src = src;
       img.onload = async () => {
-        if (mobilenetModel) {
-          try {
-            const predictions = await mobilenetModel.classify(img);
+        try {
+          let model = mobilenetModel;
+          if (!model) {
+            setIsModelLoading(true);
+            model = await loadVisionModel();
+            setMobilenetModel(model);
+          }
+          const predictions = await model.classify(img);
             const highSeverityKeywords = ['car', 'vehicle', 'bumper', 'cab', 'van', 'grille', 'wheel', 'tire', 'wreck', 'truck', 'bus', 'traffic', 'racer', 'ambulance', 'crash'];
             const isHighSeverity = predictions.some((p: any) =>
               highSeverityKeywords.some(keyword => p.className.toLowerCase().includes(keyword))
@@ -514,11 +516,13 @@ export default function App() {
                 aiBriefDescription
               });
             }
-          } catch (err) {
-            setVisionAnalysis({ traumaLevel: 'ERROR', override: false, reason: 'Vision model failed to analyze image.' } as any);
-          }
+        } catch (err) {
+          console.error('Vision analysis failed:', err);
+          setVisionAnalysis({ traumaLevel: 'ERROR', override: false, reason: 'Vision model failed to analyze image.' } as any);
+        } finally {
+          setIsModelLoading(false);
+          setIsScanningPhoto(false);
         }
-        setIsScanningPhoto(false);
       };
     };
     reader.readAsDataURL(file);

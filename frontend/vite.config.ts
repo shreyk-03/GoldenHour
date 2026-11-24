@@ -11,6 +11,21 @@ export default defineConfig({
       '@': path.resolve(__dirname, '.'),
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return;
+          if (id.includes('leaflet')) return 'map';
+          if (id.includes('@tensorflow') || id.includes('tfjs')) return 'vision';
+          if (id.includes('framer-motion') || id.includes('motion-dom') || id.includes('motion-utils')) return 'motion';
+          if (id.includes('lucide-react')) return 'icons';
+          if (id.includes('react') || id.includes('scheduler')) return 'react-vendor';
+          return 'vendor';
+        },
+      },
+    },
+  },
   server: {
     port: 5173,
     // HMR is disabled in AI Studio via DISABLE_HMR env var.
